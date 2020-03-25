@@ -9,7 +9,7 @@
 #include "json/json.h"
 #include "resource.h"
 
-#include <glog/logging.h>
+#include "glog/logging.h"
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "Wininet.lib")
@@ -354,7 +354,7 @@ bool UpdateDomain() {
     std::string type;
     std::string line_id;
     for (auto record = records.begin(); record != records.end(); ++record) {
-        if ((*record)["name"].asString().compare("bj") == 0) {
+        if ((*record)["name"].asString().compare(gName) == 0) {
             id = (*record)["id"].asString();
             type = (*record)["type"].asString();
             line_id = (*record)["line_id"].asString();
