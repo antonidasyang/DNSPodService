@@ -325,14 +325,15 @@ VOID SvcReportEvent(LPTSTR szFunction) {
 }
 
 bool UpdateDomain() {
+    LOG(INFO) << "Start UpdateDomain...";
     std::string content;
     std::string post_data;
 
     // get record id
     post_data = "login_token=" + gLogin + "&format=json&domain=" + gDomain;
+    LOG(INFO) << "Get record list: https://dnsapi.cn/Record.List - " << post_data;
     if (!HttpRequest("https://dnsapi.cn/Record.List", "POST", post_data, content)) {
-        LOG(ERROR) << "POST FAILED: https://dnsapi.cn/Record.List - " << post_data;
-        LOG(ERROR) << content;
+        LOG(ERROR) << "Get record list failed: " << content;
         return false;
     }
 
@@ -340,14 +341,17 @@ bool UpdateDomain() {
     Json::Value root;
     Json::CharReaderBuilder builder;
     const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    LOG(INFO) << "Parse content: " << content;
     if (!reader->parse(content.c_str(), content.c_str() + content.size(), &root, &err)) {
-        LOG(ERROR) << "PARSE FAILED:" << content;
-        LOG(ERROR) << "https://dnsapi.cn/Record.List - " << post_data;
+        LOG(ERROR) << "Parse failed.";
         return false;
     }
 
     auto status = root["status"];
-    if (status["code"].asString().compare("1") != 0) return false;
+    if (status["code"].asString().compare("1") != 0) {
+        LOG(ERROR) << "Code failed.";
+        return false;
+    }
 
     auto records = root["records"];
     std::string id;
@@ -361,11 +365,15 @@ bool UpdateDomain() {
             break;
         }
     }
-    if (id.empty()) return false;
+    if (id.empty()) {
+        LOG(ERROR) << "Get id failed.";
+        return false;
+    }
 
     // get ip
+    LOG(INFO) << "Start get ip: http://www.net.cn/static/customercare/yourip.asp";
     if (!HttpRequest("http://www.net.cn/static/customercare/yourip.asp", "GET", "", content)) {
-        LOG(ERROR) << "GET FAILED: http://www.net.cn/static/customercare/yourip.asp";
+        LOG(ERROR) << "Get ip failed.";
         return false;
     }
 
@@ -379,15 +387,16 @@ bool UpdateDomain() {
     std::string ip = content.substr(p1, p2 - p1);
 
     // modify
-    post_data = "login_token=" + gLogin + "&format=json&domain=d2ssoft.com&record_id=" + id + "&sub_domain=" + gName + "&value=" + ip + "&record_type=" + type + "&record_line_id=" + line_id;
+    post_data = "login_token=" + gLogin + "&format=json&domain=" + gDomain  + "&record_id=" + id + "&sub_domain=" + gName + "&value=" + ip + "&record_type=" + type + "&record_line_id=" + line_id;
+    LOG(INFO) << "Modify record: url - https://dnsapi.cn/Record.Modify, post - " << post_data;
     if (!HttpRequest("https://dnsapi.cn/Record.Modify", "POST", post_data, content)) {
-        LOG(ERROR) << "POST FAILED: https://dnsapi.cn/Record.Modify - " << post_data;
+        LOG(ERROR) << "Post failed.";
         return false;
     }
 
+    LOG(INFO) << "Parse content: " << content;
     if (!reader->parse(content.c_str(), content.c_str() + content.size(), &root, &err)) {
-        LOG(ERROR) << "PARSE FAILED:" << content;
-        LOG(ERROR) << "https://dnsapi.cn/Record.Modify - " << post_data;
+        LOG(ERROR) << "Parse failed.";
         return false;
     }
     LOG(INFO) << "MODIFY RESULT: " << content;
