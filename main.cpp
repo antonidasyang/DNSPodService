@@ -9,23 +9,25 @@
 #include "json/json.h"
 #include "resource.h"
 
-#include "glog/logging.h"
+#include <glog/logging.h>
+#include <cpprest/http_client.h>
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "Wininet.lib")
 #pragma comment(lib, "jsoncpp.lib")
 #pragma comment(lib, "glog.lib")
 
-#define SVCNAME TEXT("DNSPod Service")
+#define SVCNAME TEXT("Cloudflare Service")
+#define HOST U("https://api.cloudflare.com/")
+#define PATH_FMT "/client/v4/zones/%s/dns_records/%s"
+#define CONTENT_FMT "{ \"name\": \"%s\", \"type\" : \"A\", \"content\" : \"%s\", \"ttl\" : 1 }"
 
+namespace {
 SERVICE_STATUS          gSvcStatus;
 SERVICE_STATUS_HANDLE   gSvcStatusHandle;
 HANDLE                  ghSvcStopEvent = NULL;
 std::string             gPath;
-std::string             gLogin;
-std::string             gName;
-std::string             gDomain;
-
+}
 
 VOID SvcInstall(void);
 VOID SvcUninstall(void);
@@ -36,10 +38,7 @@ VOID ReportSvcStatus(DWORD, DWORD, DWORD);
 VOID SvcInit(DWORD, LPTSTR*);
 VOID SvcReportEvent(LPTSTR);
 bool UpdateDomain(void);
-bool HttpRequest(const std::string& url, const std::string& method, const std::string& post_data, std::string& content);
-void WriteFile(const std::string& filename, const std::string& content);
-bool LoadConfig();
-
+bool GetIP(std::wstring& ip);
 
 int __cdecl _tmain(int argc, TCHAR* argv[]) {
     // If command-line parameter is "install", install the service. 
@@ -67,7 +66,7 @@ int __cdecl _tmain(int argc, TCHAR* argv[]) {
     std::string log_path = gPath + "\\logs";
     CreateDirectoryA(log_path.c_str(), NULL);
     FLAGS_log_dir = log_path;
-    google::InitGoogleLogging("DNSPod Service");
+    google::InitGoogleLogging("Cloudflare Service");
 
     // TO_DO: Add any additional services for the process to this table.
     SERVICE_TABLE_ENTRY DispatchTable[] =
@@ -233,15 +232,13 @@ VOID SvcInit(DWORD dwArgc, LPTSTR* lpszArgv) {
             break;
         }
         else if (ret == (WAIT_OBJECT_0 + 1)) {
-            if (LoadConfig()) {
-                if (UpdateDomain()) {
-                    LOG(INFO) << "UpdateDomain OK!";
-                    liDueTime.QuadPart = -600 * sec;
-                }
-                else {
-                    LOG(INFO) << "UpdateDomain Failed!";
-                    liDueTime.QuadPart = -60 * sec;
-                }
+            if (UpdateDomain()) {
+                LOG(INFO) << "UpdateDomain OK!";
+                liDueTime.QuadPart = -600 * sec;
+            }
+            else {
+                LOG(INFO) << "UpdateDomain Failed!";
+                liDueTime.QuadPart = -60 * sec;
             }
 
             SetWaitableTimer(hTimer, &liDueTime, 0, NULL, NULL, 0);
@@ -326,174 +323,106 @@ VOID SvcReportEvent(LPTSTR szFunction) {
 
 bool UpdateDomain() {
     LOG(INFO) << "Start UpdateDomain...";
-    std::string content;
-    std::string post_data;
-
-    // get record id
-    post_data = "login_token=" + gLogin + "&format=json&domain=" + gDomain;
-    LOG(INFO) << "Get record list: https://dnsapi.cn/Record.List - " << post_data;
-    if (!HttpRequest("https://dnsapi.cn/Record.List", "POST", post_data, content)) {
-        LOG(ERROR) << "Get record list failed: " << content;
-        return false;
-    }
-
-    JSONCPP_STRING err;
-    Json::Value root;
-    Json::CharReaderBuilder builder;
-    const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
-    LOG(INFO) << "Parse content: " << content;
-    if (!reader->parse(content.c_str(), content.c_str() + content.size(), &root, &err)) {
-        LOG(ERROR) << "Parse failed.";
-        return false;
-    }
-
-    auto status = root["status"];
-    if (status["code"].asString().compare("1") != 0) {
-        LOG(ERROR) << "Code failed.";
-        return false;
-    }
-
-    auto records = root["records"];
-    std::string id;
-    std::string type;
-    std::string line_id;
-    for (auto record = records.begin(); record != records.end(); ++record) {
-        if ((*record)["name"].asString().compare(gName) == 0) {
-            id = (*record)["id"].asString();
-            type = (*record)["type"].asString();
-            line_id = (*record)["line_id"].asString();
-            break;
-        }
-    }
-    if (id.empty()) {
-        LOG(ERROR) << "Get id failed.";
-        return false;
-    }
 
     // get ip
-    LOG(INFO) << "Start get ip: http://www.net.cn/static/customercare/yourip.asp";
-    if (!HttpRequest("http://www.net.cn/static/customercare/yourip.asp", "GET", "", content)) {
-        LOG(ERROR) << "Get ip failed.";
+    LOG(INFO) << "Getting ip...";
+    std::wstring ip;
+    if (!GetIP(ip)) {
+        LOG(INFO) << "Get ip failed!";
         return false;
     }
+    LOG(INFO) << "Get ip succeeded: " << ip.c_str();
 
-    size_t p1 = content.find("<h2>");
+    //LOG(INFO) << "Loading configuration file...";
+    //Json::Value root;
+    //std::ifstream ifs;
+    //ifs.open(gPath + "\\config.json");
+    //Json::CharReaderBuilder builder;
+    //builder["collectComments"] = true;
+    //JSONCPP_STRING errs;
+    //if (!parseFromStream(builder, ifs, &root, &errs)) return false;
+
+    //Json::Value dns_list = root["dns"];
+    return false;
+
+//    HINTERNET hInt = InternetOpen(NULL, INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+//    if (hInt == NULL) return false;
+//
+//    HINTERNET hConnect = InternetConnect(hInt, HOST, INTERNET_DEFAULT_HTTPS_PORT, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
+//    if (hConnect == NULL) {
+//        InternetCloseHandle(hInt);
+//        return false;
+//    }
+//
+//    LPCSTR rgpszAcceptTypes[] = { "text/*", NULL };
+//
+//    for (Json::Value::ArrayIndex i = 0; i < dns_list.size(); ++i) {
+//        std::string auth = dns_list[i]["auth"].asString();
+//        std::string zone_id = dns_list[i]["zone_id"].asString();
+//        std::string dns_id = dns_list[i]["dns_id"].asString();
+//        std::string name = dns_list[i]["name"].asString();
+//
+//        web::http::client::http_client client(HOST);
+//        web::http::uri_builder builder(U("/search"));
+//        builder.append_query(U("q"), U("cpprestsdk github"));
+//        web::http::http_headers headers;
+//        headers.add(U("Authorization"), U("Bearer "));
+//        return client.request(methods::GET, builder.to_string());
+////        HttpClient hc(HOST, true);
+//        char szPath[MAX_PATH];
+//        sprintf_s(szPath, PATH_FMT, zone_id.c_str(), dns_id.c_str());
+//
+//        std::string headers = "Authorization: Bearer " + auth + "\r\nContent-Type: application/json\r\nConnection: keep-alive\r\nAccept: */*\r\n";
+//        char szContent[1000];
+//        memset(szContent, 0, 1000);
+//        sprintf_s(szContent, CONTENT_FMT, name.c_str(), ip.c_str());
+//        std::string response;
+//        LOG(WARNING) << "HEADERS: " << headers;
+//        LOG(WARNING) << "CONTENT: " << szContent;
+//        if (hc.HttpRequest(szPath, "PUT", headers, szContent, response)) {
+//            Json::Value result;
+//            std::istringstream iss(response);
+//            Json::CharReaderBuilder resultBuilder;
+//            resultBuilder["collectComments"] = true;
+//            if (parseFromStream(resultBuilder, iss, &result, &errs)) {
+//                if (result["success"].asBool()) {
+//                    LOG(INFO) << "Update " << ip << " to dns " << name << " succeeded!";
+//                    continue;
+//                }
+//            }
+//
+//            LOG(ERROR) << "Update " << ip << " to dns " << name << " failed!";
+//            LOG(ERROR) << "Resposne: " << response;
+//        }
+//    }
+//
+//    return true;
+}
+
+bool GetIP(std::wstring& ip) {
+    LOG(INFO) << "1111111111";
+    Sleep(100);
+    web::http::client::http_client client(U("http://www.net.cn/"));
+    LOG(INFO) << "222222222";
+    Sleep(100);
+    web::http::uri_builder builder(U("/static/customercare/yourip.asp"));
+    LOG(INFO) << "3333333333";
+    Sleep(100);
+    web::http::http_response response = client.request(web::http::methods::GET, builder.to_string()).get();
+    LOG(INFO) << "4444444444";
+    Sleep(100);
+    //response.body().read_to_end(fileStream->streambuf());
+    std::wstring body = response.extract_string().get();
+    LOG(INFO) << "5555555555";
+    Sleep(100);
+
+    size_t p1 = body.find(L"<h2>");
     if (p1 == std::string::npos) return false;
     p1 += 4;
 
-    size_t p2 = content.find("</h2>");
+    size_t p2 = body.find(L"</h2>");
     if (p2 == std::string::npos) return false;
 
-    std::string ip = content.substr(p1, p2 - p1);
-
-    // modify
-    post_data = "login_token=" + gLogin + "&format=json&domain=" + gDomain  + "&record_id=" + id + "&sub_domain=" + gName + "&value=" + ip + "&record_type=" + type + "&record_line_id=" + line_id;
-    LOG(INFO) << "Modify record: url - https://dnsapi.cn/Record.Modify, post - " << post_data;
-    if (!HttpRequest("https://dnsapi.cn/Record.Modify", "POST", post_data, content)) {
-        LOG(ERROR) << "Post failed.";
-        return false;
-    }
-
-    LOG(INFO) << "Parse content: " << content;
-    if (!reader->parse(content.c_str(), content.c_str() + content.size(), &root, &err)) {
-        LOG(ERROR) << "Parse failed.";
-        return false;
-    }
-    LOG(INFO) << "MODIFY RESULT: " << content;
-
-    status = root["status"];
-    return status["code"].asString().compare("1") == 0;
-}
-
-bool HttpRequest(const std::string& url, const std::string& method, const std::string& post_data, std::string& content) {
-    if (url.compare(0, 4, "http") != 0) return false;
-
-    size_t p1 = url.find("://", 0);
-    if (p1 == std::string::npos) return false;
-
-    p1 += 3;
-    size_t p2 = url.find("/", p1);
-    std::string host;
-    std::string route = "/";
-    if (p2 == std::string::npos) {
-        host = url.substr(p1);
-    }
-    else {
-        host = url.substr(p1, p2 - p1);
-        route = url.substr(p2);
-    }
-
-    HINTERNET hInt = InternetOpenA("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3785.3 Safari/537.36", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-    if (hInt == NULL) return false;
-
-    bool https = (url.compare(0, 5, "https") == 0);
-    HINTERNET hConnect = InternetConnectA(hInt, host.c_str(), https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT,
-        NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
-    if (hConnect == NULL) {
-        InternetCloseHandle(hInt);
-        return false;
-    }
-
-    LPCSTR rgpszAcceptTypes[] = { "text/*", NULL };
-    DWORD dwFlags = INTERNET_FLAG_RELOAD;
-    if (https) dwFlags |= INTERNET_FLAG_SECURE;
-    HINTERNET hRequest = HttpOpenRequestA(hConnect, method.c_str(), route.c_str(), "HTTP/1.1", NULL, rgpszAcceptTypes, dwFlags, 0);
-    if (hRequest == NULL) {
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInt);
-        return false;
-    }
-
-    std::string headers = "Host: " + host + "\r\nConnection: keep-alive\r\n";
-    BOOL ret = FALSE;
-    if (method.compare("POST") == 0) {
-        headers += "Content-Type: application/x-www-form-urlencoded\r\n";
-        ret = HttpSendRequestA(hRequest, headers.c_str(), -1L, (LPVOID)post_data.c_str(), (DWORD)post_data.size());
-    }
-    else {
-        ret = HttpSendRequestA(hRequest, headers.c_str(), -1L, NULL, 0);
-    }
-
-    if (ret == TRUE) {
-        char szData[1001];
-        DWORD dwSize = 0;
-        DWORD dwTotal = 0;
-        content = "";
-        while (InternetReadFile(hRequest, (LPVOID)szData, 1000, &dwSize) == TRUE) {
-            if (dwSize == 0) break;
-
-            szData[dwSize] = '\0';
-            content += szData;
-        }
-
-    }
-
-    HttpEndRequest(hRequest, NULL, 0, 0);
-    InternetCloseHandle(hRequest);
-    InternetCloseHandle(hConnect);
-    InternetCloseHandle(hInt);
-
-    return ret == TRUE;
-}
-
-void WriteFile(const std::string& filename, const std::string& content) {
-    std::ofstream ofs(filename, std::ofstream::out);
-    ofs.write(content.c_str(), content.size());
-    ofs.close();
-}
-
-bool LoadConfig() {
-    Json::Value root;
-    std::ifstream ifs;
-    ifs.open(gPath + "\\config.json");
-    Json::CharReaderBuilder builder;
-    builder["collectComments"] = true;
-    JSONCPP_STRING errs;
-    if (!parseFromStream(builder, ifs, &root, &errs)) return false;
-
-    gLogin = root["login"].asString();
-    gName = root["name"].asString();
-    gDomain = root["domain"].asString();
-
+    ip = body.substr(p1, p2 - p1);
     return true;
 }
